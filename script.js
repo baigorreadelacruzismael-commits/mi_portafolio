@@ -1,5 +1,13 @@
-// ── DATA ─────────────────────────────────────────────────────────────
-// Each week can store: { imageDataUrl, imageName, pdfUrl, pdfName, pdfSize }
+// ══════════════════════════════════════════════════════════════
+//  SUPABASE CONFIG  ←  reemplaza con tus credenciales reales
+// ══════════════════════════════════════════════════════════════
+const SUPABASE_URL      = 'https://ffqfeazjozckcvphxycf.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_jkBaGuhyDYAoz4uN-IA03Q_vo1MVR9U';
+
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ── DATA ──────────────────────────────────────────────────────
 const WEEKS = [
   { id:1,  title:'Semana 1',  sub:'Introducción al diseño',      desc:'Ejercicios introductorios: teoría del color, composición básica y bocetos a mano alzada.',                        image:null, pdf:null },
   { id:2,  title:'Semana 2',  sub:'Tipografía',                  desc:'Exploración tipográfica: familias, jerarquía visual y diseño editorial con texto como protagonista.',              image:null, pdf:null },
@@ -19,12 +27,14 @@ const WEEKS = [
   { id:16, title:'Semana 16', sub:'Proyecto final integrador',   desc:'Presentación e integración de todos los conceptos del curso en un proyecto personal completo y autoral.',         image:null, pdf:null },
 ];
 
-// ── TEMP UPLOAD STATE ─────────────────────────────────────────────────
-let pendingImage = null; // { dataUrl, name }
-let pendingPdf   = null; // { objectUrl, name, size }
+let pendingImage = null;
+let pendingPdf   = null;
 
-// ── INIT ─────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+// ══════════════════════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadWeeksFromSupabase();
   renderWeeks();
   populateWeekSelect();
 
@@ -39,13 +49,115 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ── STATS ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  SUPABASE — CARGA DE DATOS
+// ══════════════════════════════════════════════════════════════
+async function loadWeeksFromSupabase() {
+  try {
+    const { data, error } = await db
+      .from('weeks')
+      .select('id, image_url, image_name, pdf_url, pdf_name, pdf_size');
+
+    if (error) {
+      console.error('Error cargando semanas:', error.message);
+      return;
+    }
+
+    if (!data || data.length === 0) {
+      console.warn('Tabla weeks vacía. ¿Ejecutaste el SQL setup?');
+      return;
+    }
+
+    data.forEach(row => {
+      const week = WEEKS.find(w => w.id === row.id);
+      if (!week) return;
+
+      const imgExt = row.image_name ? row.image_name.split('.').pop().toLowerCase() : '';
+      const pdfExt = row.pdf_name   ? row.pdf_name.split('.').pop().toLowerCase()   : 'pdf';
+
+      // URL limpia desde DB + cache-buster solo para el navegador
+      week.image = row.image_url
+        ? {
+            dataUrl:     row.image_url + '?t=' + Date.now(),
+            name:        row.image_name || 'imagen',
+            storagePath: `images/semana-${row.id}.${imgExt}`
+          }
+        : null;
+
+      week.pdf = row.pdf_url
+        ? {
+            objectUrl:   row.pdf_url,
+            name:        row.pdf_name || 'archivo.pdf',
+            size:        row.pdf_size || '',
+            storagePath: `pdfs/semana-${row.id}.${pdfExt}`
+          }
+        : null;
+    });
+
+    console.log('✓ Semanas cargadas desde Supabase');
+  } catch (err) {
+    console.error('Error inesperado al cargar semanas:', err);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SUPABASE — SUBIDA DE ARCHIVOS
+// ══════════════════════════════════════════════════════════════
+async function uploadFileToStorage(file, folder, weekId) {
+  const ext  = file.name.split('.').pop().toLowerCase();
+  const path = `${folder}/semana-${weekId}.${ext}`;
+
+  const { error: uploadError } = await db.storage
+    .from('portfolio')
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: true,
+      contentType: file.type,
+    });
+
+  if (uploadError) {
+    console.error(`Error subiendo ${path}:`, uploadError.message);
+    return null;
+  }
+
+  // URL pública SIN timestamp — se guarda limpia en la DB
+  const { data } = db.storage.from('portfolio').getPublicUrl(path);
+  return data.publicUrl;
+}
+
+async function deleteFileFromStorage(storagePath) {
+  if (!storagePath) return;
+  const { error } = await db.storage.from('portfolio').remove([storagePath]);
+  if (error) console.error(`Error eliminando ${storagePath}:`, error.message);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SUPABASE — GUARDAR EN DB
+// ══════════════════════════════════════════════════════════════
+async function saveWeekToDb(weekId, fields) {
+  const { error } = await db
+    .from('weeks')
+    .update({ ...fields, updated_at: new Date().toISOString() })
+    .eq('id', weekId);
+
+  if (error) {
+    console.error('Error guardando en DB:', error.message);
+    return false;
+  }
+  return true;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  STATS
+// ══════════════════════════════════════════════════════════════
 function updateStats() {
   const total = WEEKS.filter(w => w.image || w.pdf).length;
   document.getElementById('stat-files').textContent = total;
 }
 
-// ── RENDER WEEKS ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  RENDER WEEKS
+// ══════════════════════════════════════════════════════════════
 function renderWeeks() {
   const grid = document.getElementById('weeks-grid');
   grid.innerHTML = '';
@@ -67,7 +179,7 @@ function renderWeeks() {
           ${hasPdf   ? '<span class="type-badge">PDF</span>' : ''}
         </div>
         ${hasImage
-          ? `<img src="${w.image.dataUrl}" alt="${w.sub}" />`
+          ? `<img src="${w.image.dataUrl}" alt="${w.sub}" onerror="this.style.display='none'" />`
           : `<span class="thumb-placeholder ${hasAny ? 'light' : ''}">${w.id}</span>`
         }
       </div>
@@ -86,7 +198,9 @@ function renderWeeks() {
   updateStats();
 }
 
-// ── VIEW MODAL ────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  VIEW MODAL
+// ══════════════════════════════════════════════════════════════
 function openWeek(id) {
   const w = WEEKS.find(x => x.id === id);
 
@@ -98,7 +212,6 @@ function openWeek(id) {
   const pdfWrap  = document.getElementById('modal-pdf-wrap');
   const emptyMsg = document.getElementById('file-empty');
 
-  // Image
   if (w.image) {
     document.getElementById('modal-cover-img').src = w.image.dataUrl;
     imgWrap.style.display = 'block';
@@ -106,7 +219,6 @@ function openWeek(id) {
     imgWrap.style.display = 'none';
   }
 
-  // PDF
   if (w.pdf) {
     document.getElementById('modal-pdf-name').textContent = w.pdf.name;
     document.getElementById('modal-pdf-size').textContent = w.pdf.size;
@@ -119,7 +231,6 @@ function openWeek(id) {
   }
 
   emptyMsg.style.display = (!w.image && !w.pdf) ? 'block' : 'none';
-
   document.getElementById('view-overlay').classList.add('active');
 }
 
@@ -127,20 +238,23 @@ function closeViewModal() {
   document.getElementById('view-overlay').classList.remove('active');
 }
 
-// ── ADMIN PANEL ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  ADMIN PANEL
+// ══════════════════════════════════════════════════════════════
 function openAdminPanel()  { document.getElementById('admin-overlay').classList.add('active'); }
 function closeAdminPanel() { document.getElementById('admin-overlay').classList.remove('active'); }
 
-// ── LOGIN ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  LOGIN
+// ══════════════════════════════════════════════════════════════
 function doLogin() {
   const user  = document.getElementById('login-user').value.trim();
   const pass  = document.getElementById('login-pass').value;
   const errEl = document.getElementById('login-error');
 
-  // ← Change credentials here for production
   if (user === 'admin' && pass === '1234') {
-    document.getElementById('login-section').style.display  = 'none';
-    document.getElementById('admin-content').style.display  = 'block';
+    document.getElementById('login-section').style.display = 'none';
+    document.getElementById('admin-content').style.display = 'block';
     renderManageList();
   } else {
     errEl.textContent   = 'Usuario o contraseña incorrectos.';
@@ -152,15 +266,17 @@ function doLogin() {
 }
 
 function doLogout() {
-  document.getElementById('login-section').style.display  = 'block';
-  document.getElementById('admin-content').style.display  = 'none';
+  document.getElementById('login-section').style.display = 'block';
+  document.getElementById('admin-content').style.display = 'none';
   document.getElementById('login-user').value = '';
   document.getElementById('login-pass').value = '';
   resetUploadUI();
   switchTab('upload');
 }
 
-// ── TABS ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  TABS
+// ══════════════════════════════════════════════════════════════
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === name)
@@ -171,7 +287,9 @@ function switchTab(name) {
   if (name === 'manage') renderManageList();
 }
 
-// ── WEEK SELECT ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  WEEK SELECT
+// ══════════════════════════════════════════════════════════════
 function populateWeekSelect() {
   const sel = document.getElementById('upload-week');
   sel.innerHTML = WEEKS.map(w =>
@@ -179,19 +297,18 @@ function populateWeekSelect() {
   ).join('');
 }
 
-// ── IMAGE HANDLING ────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  IMAGE HANDLING
+// ══════════════════════════════════════════════════════════════
 function handleImageSelect(event) {
   const file = event.target.files[0];
   if (!file) return;
 
   const reader = new FileReader();
   reader.onload = e => {
-    pendingImage = { dataUrl: e.target.result, name: file.name };
-
-    // Show preview, hide zone
+    pendingImage = { file, dataUrl: e.target.result, name: file.name };
     document.getElementById('img-zone').style.display    = 'none';
-    const prev = document.getElementById('img-preview');
-    prev.style.display = 'block';
+    document.getElementById('img-preview').style.display = 'block';
     document.getElementById('img-preview-img').src = e.target.result;
   };
   reader.readAsDataURL(file);
@@ -200,100 +317,152 @@ function handleImageSelect(event) {
 function removeImage(e) {
   if (e) e.preventDefault();
   pendingImage = null;
-  document.getElementById('img-input').value          = '';
-  document.getElementById('img-preview').style.display = 'none';
-  document.getElementById('img-zone').style.display    = 'block';
+  document.getElementById('img-input').value            = '';
+  document.getElementById('img-preview').style.display  = 'none';
+  document.getElementById('img-zone').style.display     = 'block';
 }
 
-// ── PDF HANDLING ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  PDF HANDLING
+// ══════════════════════════════════════════════════════════════
 function handlePdfSelect(event) {
   const file = event.target.files[0];
   if (!file) return;
 
-  // Revoke previous object URL if any
-  if (pendingPdf) URL.revokeObjectURL(pendingPdf.objectUrl);
-
-  const objectUrl = URL.createObjectURL(file);
   const sizeKB    = file.size / 1024;
   const sizeLabel = sizeKB >= 1024
     ? (sizeKB / 1024).toFixed(1) + ' MB'
     : Math.round(sizeKB) + ' KB';
 
-  pendingPdf = { objectUrl, name: file.name, size: sizeLabel };
+  pendingPdf = { file, name: file.name, size: sizeLabel };
 
-  // Show selected row, hide zone
-  document.getElementById('pdf-zone').style.display      = 'none';
-  document.getElementById('pdf-selected').style.display  = 'flex';
+  document.getElementById('pdf-zone').style.display        = 'none';
+  document.getElementById('pdf-selected').style.display    = 'flex';
   document.getElementById('pdf-selected-name').textContent = file.name;
 }
 
 function removePdf(e) {
   if (e) e.preventDefault();
-  if (pendingPdf) URL.revokeObjectURL(pendingPdf.objectUrl);
   pendingPdf = null;
-  document.getElementById('pdf-input').value             = '';
-  document.getElementById('pdf-selected').style.display  = 'none';
-  document.getElementById('pdf-zone').style.display      = 'block';
+  document.getElementById('pdf-input').value            = '';
+  document.getElementById('pdf-selected').style.display = 'none';
+  document.getElementById('pdf-zone').style.display     = 'block';
 }
 
-// ── PUBLISH ───────────────────────────────────────────────────────────
-function doUpload() {
+// ══════════════════════════════════════════════════════════════
+//  PUBLISH
+// ══════════════════════════════════════════════════════════════
+async function doUpload() {
   const wid = parseInt(document.getElementById('upload-week').value);
   const w   = WEEKS.find(x => x.id === wid);
+  const btn = document.querySelector('#tab-upload .btn-primary');
 
   if (!pendingImage && !pendingPdf) {
     showStatus('upload-status', 'error', '⚠ Selecciona al menos una imagen o un PDF.');
     return;
   }
 
-  // Revoke old object URLs before replacing
-  if (pendingImage) {
-    w.image = { dataUrl: pendingImage.dataUrl, name: pendingImage.name };
-  }
-  if (pendingPdf) {
-    if (w.pdf) URL.revokeObjectURL(w.pdf.objectUrl);
-    w.pdf = { objectUrl: pendingPdf.objectUrl, name: pendingPdf.name, size: pendingPdf.size };
-  }
+  btn.disabled    = true;
+  btn.textContent = 'Subiendo…';
+  showStatus('upload-status', 'ok', '⏳ Subiendo archivos…');
 
-  const parts = [];
-  if (pendingImage) parts.push('imagen');
-  if (pendingPdf)   parts.push('PDF');
-  showStatus('upload-status', 'ok', `✓ ${parts.join(' y ')} publicado${parts.length > 1 ? 's' : ''} en ${w.title}.`);
+  const dbFields = {};
+  const parts    = [];
+
+  try {
+    if (pendingImage) {
+      const url = await uploadFileToStorage(pendingImage.file, 'images', wid);
+      if (!url) throw new Error('No se pudo subir la imagen al Storage.');
+
+      const ext = pendingImage.name.split('.').pop().toLowerCase();
+      w.image = {
+        dataUrl:     url + '?t=' + Date.now(),
+        name:        pendingImage.name,
+        storagePath: `images/semana-${wid}.${ext}`
+      };
+      dbFields.image_url  = url;          // ← URL limpia guardada en DB
+      dbFields.image_name = pendingImage.name;
+      parts.push('imagen');
+    }
+
+    if (pendingPdf) {
+      const url = await uploadFileToStorage(pendingPdf.file, 'pdfs', wid);
+      if (!url) throw new Error('No se pudo subir el PDF al Storage.');
+
+      const ext = pendingPdf.name.split('.').pop().toLowerCase();
+      w.pdf = {
+        objectUrl:   url,
+        name:        pendingPdf.name,
+        size:        pendingPdf.size,
+        storagePath: `pdfs/semana-${wid}.${ext}`
+      };
+      dbFields.pdf_url  = url;            // ← URL limpia guardada en DB
+      dbFields.pdf_name = pendingPdf.name;
+      dbFields.pdf_size = pendingPdf.size;
+      parts.push('PDF');
+    }
+
+    const saved = await saveWeekToDb(wid, dbFields);
+    if (!saved) throw new Error('Los archivos se subieron pero no se guardaron en la base de datos.');
+
+    showStatus('upload-status', 'ok',
+      `✓ ${parts.join(' y ')} publicado${parts.length > 1 ? 's' : ''} en ${w.title}.`
+    );
+
+  } catch (err) {
+    showStatus('upload-status', 'error', `✗ ${err.message}`);
+    console.error(err);
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Publicar en portafolio';
+  }
 
   pendingImage = null;
   pendingPdf   = null;
-
   renderWeeks();
   renderManageList();
   resetUploadUI();
 }
 
 function resetUploadUI() {
-  document.getElementById('img-input').value             = '';
-  document.getElementById('pdf-input').value             = '';
-  document.getElementById('img-preview').style.display   = 'none';
-  document.getElementById('img-zone').style.display      = 'block';
-  document.getElementById('pdf-selected').style.display  = 'none';
-  document.getElementById('pdf-zone').style.display      = 'block';
+  document.getElementById('img-input').value            = '';
+  document.getElementById('pdf-input').value            = '';
+  document.getElementById('img-preview').style.display  = 'none';
+  document.getElementById('img-zone').style.display     = 'block';
+  document.getElementById('pdf-selected').style.display = 'none';
+  document.getElementById('pdf-zone').style.display     = 'block';
 }
 
-// ── DELETE ────────────────────────────────────────────────────────────
-function deleteImage(wid) {
+// ══════════════════════════════════════════════════════════════
+//  DELETE
+// ══════════════════════════════════════════════════════════════
+async function deleteImage(wid) {
   const w = WEEKS.find(x => x.id === wid);
+  if (!w.image) return;
+
+  await deleteFileFromStorage(w.image.storagePath);
+  await saveWeekToDb(wid, { image_url: null, image_name: null });
+
   w.image = null;
   renderWeeks();
   renderManageList();
 }
 
-function deletePdf(wid) {
+async function deletePdf(wid) {
   const w = WEEKS.find(x => x.id === wid);
-  if (w.pdf) URL.revokeObjectURL(w.pdf.objectUrl);
+  if (!w.pdf) return;
+
+  await deleteFileFromStorage(w.pdf.storagePath);
+  await saveWeekToDb(wid, { pdf_url: null, pdf_name: null, pdf_size: null });
+
   w.pdf = null;
   renderWeeks();
   renderManageList();
 }
 
-// ── MANAGE LIST ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  MANAGE LIST
+// ══════════════════════════════════════════════════════════════
 function renderManageList() {
   const container = document.getElementById('manage-list');
   let html = '';
@@ -325,13 +494,17 @@ function renderManageList() {
   container.innerHTML = html;
 }
 
-// ── HELPERS ───────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════
 function showStatus(elId, type, msg) {
   const el = document.getElementById(elId);
-  el.textContent  = msg;
-  el.className    = type === 'ok' ? 'msg-ok' : 'msg-error';
+  el.textContent   = msg;
+  el.className     = type === 'ok' ? 'msg-ok' : 'msg-error';
   el.style.display = 'block';
-  setTimeout(() => { el.style.display = 'none'; }, 4000);
+  if (!msg.startsWith('⏳')) {
+    setTimeout(() => { el.style.display = 'none'; }, 5000);
+  }
 }
 
 function scrollToWeeks() {
